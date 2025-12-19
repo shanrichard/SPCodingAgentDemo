@@ -1,0 +1,986 @@
+
+
+“让 Claude Code 放开手脚干活”的方式做 demo，关键不在于预置多少组件，而在于把它的“动作空间”设计成**通用的、可组合的原语**：
+
+- **数据原语**：实时订阅 / 取消订阅任意 Deribit 公共频道（ticker / book / trades / chart 等）
+
+- **UI 原语**：统一的 Widget 模板（React + Tailwind），允许它自由新增页面结构、状态管理、图表/表格呈现
+
+- **交付原语**：一键生成 → 构建 → 把产物挂到 `/widgets/<id>/`，由 demo 页用 `iframe` 加载
+
+你要求“必须实时数据”，那就把数据链路做成**常驻 WebSocket 网关**（后端单连接扇出），Widget 在浏览器里通过你自己的 `/ws/market` 来订阅实时数据即可，不需要 replay。Deribit 这边建议直接用 Event Nodes 的 websocket endpoint（prod/test 不同）。([support.deribit.com](https://support.deribit.com/hc/en-us/articles/25944778794269-12-December-2023 "12 December 2023 – Deribit Support"))
+
+下面给你一个**可直接落地的 docker-compose 方案**（3 个服务：`api` + `builder` + `mcp`），你按目录把文件放好，填 `.env`，`docker-compose up --build` 就能跑。
+
+---
+
+## 1) 总体架构（满足“实时 + 放开手脚 + iframe 展示”）
+
+**运行态（给销售看）**
+
+- 浏览器打开 `http://localhost:8080/`（demo 页）
+
+- demo 页输入自然语言需求 → `POST /api/widgets`
+
+- demo 页拿到 `widget_url` → 用 `iframe` 直接加载 widget
+
+- widget 在 iframe 内通过 `ws(s)://<host>/ws/market` 订阅 Deribit 实时频道（ticker/book/trades/...），实时刷新 UI
+
+**构建态（Claude Code 干活）**
+
+- `api` 生成 widget_id、写入 spec，并调用 `builder` 服务
+
+- `builder` 把 widget 模板复制到 workspace
+
+- `builder` 调 `claude -p ...`（headless）让它改代码并运行构建命令  
+  Claude Code 的 CI 用法里明确支持 `--permission-mode acceptEdits`、`--allowedTools "Bash(*) Read(*) Edit(*) Write(*) ..."`，并通过环境变量使用 `ANTHROPIC_API_KEY`。([Claude Code](https://code.claude.com/docs/en/gitlab-ci-cd "Claude Code GitLab CI/CD - Claude Code Docs"))
+
+- 构建产物输出到共享卷 `/data/widgets/<id>/dist`
+
+- `api` 将 `/widgets/<id>/` 静态挂载给 iframe
+
+**工具态（给 Claude Code“技能/Skill”）**
+
+- `mcp` 提供 MCP 工具：列出可用 instrument、生成频道字符串、返回频道参数速查（ticker/book/trades 的 interval/group/depth 规则等）
+
+- Claude Code 通过 `claude mcp add --transport http ...` 连接远程 MCP 服务（官方文档语法）。([Claude Code](https://code.claude.com/docs/en/mcp "Connect Claude Code to tools via MCP - Claude Code Docs"))
+
+---
+
+## 2) 关键实现点（你最关心的“实时数据 + Deribit”）
+
+### 2.1 Deribit WebSocket endpoint（Event Nodes）
+
+Deribit 官方支持文章提到：公共订阅将只通过 Event Nodes 可用，prod/test 的 websocket endpoint 需要切换：
+
+- test：`wss://test.deribit.com/den/ws`
+
+- prod：`wss://streams.deribit.com/ws/api/v2` ([support.deribit.com](https://support.deribit.com/hc/en-us/articles/25944778794269-12-December-2023 "12 December 2023 – Deribit Support"))
+
+> 所以我们在 `api` 里用环境变量 `DERIBIT_WS_URL` 配置，不要写死。
+
+### 2.2 Heartbeat（保证连接稳定）
+
+Deribit 支持 `public/set_heartbeat`，如果收到 `test_request`，需要调用 `/api/v2/public/test`（在 WS JSON-RPC 下对应 `public/test` 方法）来响应。([docs.deribit.com](https://docs.deribit.com/ "Deribit API"))
+
+### 2.3 频道策略（避免“demo 翻车”）
+
+- Orderbook：`book.<instrument>.100ms` 或 `book.<instrument>.<group>.<depth>.<interval>`  
+  Deribit 文档给出了 book 的 snapshot/change 结构以及 interval 参数。([docs.deribit.com](https://docs.deribit.com/ "Deribit API"))
+
+- Trades：`trades.<instrument>.100ms`（注意 `raw` 可能需要授权用户，demo 默认别用 raw）。([docs.deribit.com](https://docs.deribit.com/ "Deribit API"))
+
+- Ticker：`ticker.<instrument>.<interval>`（100ms 或 agg2，demo 选 100ms 更“动”）
+
+---
+
+## 3) 目录结构（你照这个建就行）
+
+```text
+deribit-ai-demo/
+  docker-compose.yml
+  .env.example
+
+  services/
+    api/
+      Dockerfile
+      requirements.txt
+      app/
+        main.py
+        deribit_hub.py
+        widgets.py
+
+      static/
+        index.html   # demo 页（带输入框 + iframe）
+
+    builder/
+      Dockerfile
+      requirements.txt
+      builder/
+        main.py          # FastAPI 接收 build 任务
+        run_claude.py    # 调 claude + pnpm build
+      template/
+        widget-template/ # React+Vite widget 模板（给 Claude 改）
+
+    mcp/
+      Dockerfile
+      requirements.txt
+      mcp_server.py
+```
+
+---
+
+## 4) docker-compose.yml（核心：共享 widgets 卷 + 内网互联）
+
+```yaml
+version: "3.9"
+
+services:
+  api:
+    build: ./services/api
+    environment:
+      - DERIBIT_WS_URL=${DERIBIT_WS_URL}
+      - BUILDER_URL=http://builder:8090
+      - WIDGETS_DIR=/data/widgets
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/widgets:/data/widgets
+    depends_on:
+      - builder
+
+  builder:
+    build: ./services/builder
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MCP_URL=http://mcp:7001/mcp
+      - WIDGETS_DIR=/data/widgets
+    volumes:
+      - ./data/widgets:/data/widgets
+    depends_on:
+      - mcp
+
+  mcp:
+    build: ./services/mcp
+    environment:
+      - DERIBIT_ENV=${DERIBIT_ENV:-prod}
+    ports:
+      - "7001:7001"
+```
+
+`.env.example`：
+
+```bash
+# Claude Code（CI/Headless）用
+ANTHROPIC_API_KEY=YOUR_KEY
+
+# Deribit：prod 用 Event Nodes
+DERIBIT_ENV=prod
+DERIBIT_WS_URL=wss://streams.deribit.com/ws/api/v2
+
+# 如果你要跑 test：
+# DERIBIT_ENV=test
+# DERIBIT_WS_URL=wss://test.deribit.com/den/ws
+```
+
+---
+
+## 5) API 服务（FastAPI：demo 页 + widgets + /ws/market 网关）
+
+### services/api/requirements.txt
+
+```txt
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==13.0
+httpx==0.27.2
+jinja2==3.1.4
+```
+
+### services/api/Dockerfile
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+COPY static ./static
+
+ENV PYTHONUNBUFFERED=1
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+### services/api/app/main.py
+
+```python
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from .deribit_hub import MarketHub
+from .widgets import router as widgets_router
+
+app = FastAPI(title="Deribit AI Demo")
+
+hub = MarketHub()
+
+@app.on_event("startup")
+async def _startup():
+    await hub.start()
+
+@app.on_event("shutdown")
+async def _shutdown():
+    await hub.stop()
+
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")
+
+# demo 生成的 widget 静态资源
+# /widgets/<id>/index.html 由 Vite build 输出
+app.mount("/widgets", StaticFiles(directory="/data/widgets", html=True), name="widgets")
+
+# 业务 API：创建 widget、查询状态等
+app.include_router(widgets_router, prefix="/api")
+
+# WebSocket：浏览器 widget 通过它订阅实时行情
+app.add_api_websocket_route("/ws/market", hub.ws_handler)
+```
+
+### services/api/app/deribit_hub.py（核心：单连接扇出 + 心跳 + 动态订阅）
+
+```python
+import asyncio
+import json
+import os
+import re
+from typing import Dict, Set
+import websockets
+from fastapi import WebSocket, WebSocketDisconnect
+
+DERIBIT_WS_URL = os.getenv("DERIBIT_WS_URL", "wss://streams.deribit.com/ws/api/v2")
+
+# 只允许公共订阅频道（你可以按需扩展白名单）
+ALLOWED_PREFIXES = (
+    "ticker.",
+    "book.",
+    "trades.",
+    "chart.trades.",
+    "deribit_price_index.",
+)
+
+CHANNEL_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+
+
+class MarketHub:
+    def __init__(self):
+        self._ws = None
+        self._recv_task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+
+        # channel -> set(WebSocket clients)
+        self._subs: Dict[str, Set[WebSocket]] = {}
+        self._all_channels: Set[str] = set()
+
+        self._req_id = 1
+        self._running = False
+
+    async def start(self):
+        self._running = True
+        await self._connect()
+        self._recv_task = asyncio.create_task(self._recv_loop())
+
+    async def stop(self):
+        self._running = False
+        if self._recv_task:
+            self._recv_task.cancel()
+        if self._ws:
+            await self._ws.close()
+
+    def _next_id(self) -> int:
+        self._req_id += 1
+        return self._req_id
+
+    async def _connect(self):
+        self._ws = await websockets.connect(DERIBIT_WS_URL, ping_interval=None)
+        # set heartbeat interval 30s
+        await self._ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "public/set_heartbeat",
+            "params": {"interval": 30}
+        }))
+
+        # resubscribe all channels after reconnect
+        if self._all_channels:
+            await self._ws.send(json.dumps({
+                "jsonrpc": "2.0",
+                "id": self._next_id(),
+                "method": "public/subscribe",
+                "params": {"channels": sorted(self._all_channels)}
+            }))
+
+    async def _recv_loop(self):
+        while self._running:
+            try:
+                raw = await self._ws.recv()
+                msg = json.loads(raw)
+
+                # heartbeat handling
+                if msg.get("method") == "heartbeat":
+                    params = msg.get("params") or {}
+                    if params.get("type") == "test_request":
+                        # respond with public/test
+                        await self._ws.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": self._next_id(),
+                            "method": "public/test",
+                            "params": {}
+                        }))
+                    continue
+
+                # subscription data
+                if msg.get("method") == "subscription":
+                    params = msg.get("params") or {}
+                    channel = params.get("channel")
+                    if not channel:
+                        continue
+                    # fan-out to clients subscribed to that channel
+                    clients = self._subs.get(channel, set()).copy()
+                    for client in clients:
+                        try:
+                            await client.send_text(raw)
+                        except Exception:
+                            pass
+            except Exception:
+                # reconnect loop
+                await asyncio.sleep(1.0)
+                try:
+                    await self._connect()
+                except Exception:
+                    await asyncio.sleep(2.0)
+
+    def _validate_channel(self, channel: str) -> bool:
+        if not channel or not CHANNEL_RE.match(channel):
+            return False
+        if not channel.startswith(ALLOWED_PREFIXES):
+            return False
+        return True
+
+    async def _subscribe_deribit(self, channels: Set[str]):
+        if not channels:
+            return
+        await self._ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "public/subscribe",
+            "params": {"channels": sorted(channels)}
+        }))
+
+    async def _unsubscribe_deribit(self, channels: Set[str]):
+        if not channels:
+            return
+        await self._ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "public/unsubscribe",
+            "params": {"channels": sorted(channels)}
+        }))
+
+    async def ws_handler(self, ws: WebSocket):
+        await ws.accept()
+        try:
+            while True:
+                data = await ws.receive_text()
+                req = json.loads(data)
+
+                op = req.get("op")
+                channels = req.get("channels") or []
+                channels = [c for c in channels if isinstance(c, str)]
+
+                valid = [c for c in channels if self._validate_channel(c)]
+                if not valid:
+                    await ws.send_text(json.dumps({"type": "error", "error": "no valid channels"}))
+                    continue
+
+                async with self._lock:
+                    if op == "subscribe":
+                        newly_added = set()
+                        for c in valid:
+                            self._subs.setdefault(c, set()).add(ws)
+                            if c not in self._all_channels:
+                                self._all_channels.add(c)
+                                newly_added.add(c)
+                        await self._subscribe_deribit(newly_added)
+                        await ws.send_text(json.dumps({"type": "ok", "op": "subscribe", "channels": valid}))
+
+                    elif op == "unsubscribe":
+                        newly_removed = set()
+                        for c in valid:
+                            if c in self._subs:
+                                self._subs[c].discard(ws)
+                                if not self._subs[c]:
+                                    self._subs.pop(c, None)
+                                    if c in self._all_channels:
+                                        self._all_channels.remove(c)
+                                        newly_removed.add(c)
+                        await self._unsubscribe_deribit(newly_removed)
+                        await ws.send_text(json.dumps({"type": "ok", "op": "unsubscribe", "channels": valid}))
+
+                    else:
+                        await ws.send_text(json.dumps({"type": "error", "error": "unknown op"}))
+
+        except WebSocketDisconnect:
+            pass
+        finally:
+            # cleanup: remove ws from all channels
+            async with self._lock:
+                removed = set()
+                for c, clients in list(self._subs.items()):
+                    if ws in clients:
+                        clients.discard(ws)
+                        if not clients:
+                            self._subs.pop(c, None)
+                            if c in self._all_channels:
+                                self._all_channels.remove(c)
+                                removed.add(c)
+                await self._unsubscribe_deribit(removed)
+```
+
+### services/api/app/widgets.py（创建 widget 并触发 builder）
+
+```python
+import os
+import json
+import uuid
+import httpx
+from fastapi import APIRouter
+from pydantic import BaseModel
+
+BUILDER_URL = os.getenv("BUILDER_URL", "http://builder:8090")
+WIDGETS_DIR = os.getenv("WIDGETS_DIR", "/data/widgets")
+
+router = APIRouter()
+
+class CreateWidgetReq(BaseModel):
+    prompt: str
+    # 你也可以加 instrument / theme 等参数，让 demo 更像“产品”
+    instrument: str | None = None
+
+@router.post("/widgets")
+async def create_widget(req: CreateWidgetReq):
+    wid = str(uuid.uuid4())[:8]
+    out_dir = os.path.join(WIDGETS_DIR, wid)
+    os.makedirs(out_dir, exist_ok=True)
+
+    meta = {
+        "id": wid,
+        "prompt": req.prompt,
+        "instrument": req.instrument or "BTC-PERPETUAL",
+        "status": "queued",
+    }
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        await client.post(f"{BUILDER_URL}/build", json={"id": wid, "prompt": req.prompt, "instrument": meta["instrument"]})
+
+    return {
+        "id": wid,
+        "widget_url": f"/widgets/{wid}/dist/index.html?instrument={meta['instrument']}",
+    }
+```
+
+---
+
+## 6) Builder 服务（Claude Code 真正“放开手脚”的地方）
+
+### 6.1 为什么这套 builder 不会把你锁死在“固定组件”
+
+你给 Claude 的不是组件列表，而是：
+
+- **一个可运行的 widget 工程（模板）**
+
+- **一个通用数据订阅 SDK（src/lib/market.ts）**
+
+- **一些可选的 UI 原语（Card/Table/Kpi）**
+
+- **明确的约束（不要出工程边界、不要乱装包、只用 /ws/market 实时数据）**
+
+它可以自由改页面结构、图表、布局、交互方式，本质是“在通用工程里做产品级前端”，不会变成下拉框选组件。
+
+### services/builder/requirements.txt
+
+```txt
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+```
+
+### services/builder/Dockerfile
+
+```dockerfile
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+# python + git
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip git ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+
+# pnpm + claude-code（官方文档给出 npm 安装方式） 
+# npm install -g @anthropic-ai/claude-code :contentReference[oaicite:7]{index=7}
+RUN npm install -g pnpm @anthropic-ai/claude-code
+
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+COPY builder ./builder
+COPY template ./template
+
+ENV PYTHONUNBUFFERED=1
+CMD ["uvicorn", "builder.main:app", "--host", "0.0.0.0", "--port", "8090"]
+```
+
+### services/builder/builder/main.py
+
+```python
+import os
+import json
+from fastapi import FastAPI
+from pydantic import BaseModel
+from .run_claude import build_widget
+
+WIDGETS_DIR = os.getenv("WIDGETS_DIR", "/data/widgets")
+
+app = FastAPI(title="Widget Builder")
+
+class BuildReq(BaseModel):
+    id: str
+    prompt: str
+    instrument: str
+
+@app.post("/build")
+def build(req: BuildReq):
+    # 同步 demo 够用；要并发可改成后台任务队列
+    build_widget(req.id, req.prompt, req.instrument, WIDGETS_DIR)
+    return {"ok": True}
+```
+
+### services/builder/builder/run_claude.py（核心：claude mcp add + claude -p + pnpm build）
+
+```python
+import os
+import shutil
+import subprocess
+import json
+from pathlib import Path
+
+TEMPLATE_DIR = Path("/app/template/widget-template")
+MCP_URL = os.getenv("MCP_URL", "http://mcp:7001/mcp")
+
+def _run(cmd: list[str], cwd: Path | None = None, env: dict | None = None):
+    p = subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, check=True, capture_output=True, text=True)
+    return p.stdout
+
+def build_widget(widget_id: str, user_prompt: str, instrument: str, widgets_dir: str):
+    out_root = Path(widgets_dir) / widget_id
+    ws_dir = out_root / "workspace"
+    dist_dir = out_root / "dist"
+
+    if ws_dir.exists():
+        shutil.rmtree(ws_dir)
+    shutil.copytree(TEMPLATE_DIR, ws_dir)
+
+    # 给 Claude 的项目说明（非常关键：让它“自由但不乱跑”）
+    claude_md = ws_dir / "CLAUDE.md"
+    claude_md.write_text(f"""# Widget Project Rules
+
+You are editing a self-contained widget (React + Vite + TS).
+Goal: implement the requested widget UI for Deribit market data.
+
+## Constraints
+- Do NOT fetch Deribit directly from browser. Use src/lib/market.ts (connects to /ws/market).
+- Keep dependencies minimal. Prefer existing deps.
+- The widget must build with: pnpm install && pnpm run build
+- The widget must read instrument from query param ?instrument=... (default {instrument})
+- The widget should fit in an iframe and be responsive.
+
+## Data subscription
+Use market.subscribe([...channels]) where channels follow Deribit public channels.
+Common channels:
+- ticker.<instrument>.100ms
+- book.<instrument>.100ms or book.<instrument>.<group>.<depth>.<interval>
+- trades.<instrument>.100ms
+- chart.trades.<instrument>.<resolution>
+
+You have an MCP tool server named `deribit` to help list instruments and channel formats.
+""", encoding="utf-8")
+
+    # 先把 MCP server 配好（Claude Code 官方给出 mcp add 的语法）:contentReference[oaicite:8]{index=8}
+    try:
+        _run(["claude", "mcp", "add", "--transport", "http", "deribit", MCP_URL], cwd=ws_dir)
+    except Exception:
+        # 已存在就忽略
+        pass
+
+    prompt = f"""Build a widget per this request:
+
+User request:
+{user_prompt}
+
+Instrument:
+{instrument}
+
+Deliverables:
+- Update src/App.tsx (or create components) to implement the UI.
+- Subscribe to appropriate channels via src/lib/market.ts.
+- Ensure pnpm run build passes.
+"""
+
+    env = os.environ.copy()
+    # Claude Code 在 CI 示例中说明会从环境变量使用 ANTHROPIC_API_KEY :contentReference[oaicite:9]{index=9}
+
+    # Headless 用法：-p + permission-mode + allowedTools（官方 headless 文档）:contentReference[oaicite:10]{index=10}
+    _run([
+        "claude",
+        "-p", prompt,
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "Bash(*) Read(*) Edit(*) Write(*) mcp__deribit",
+        "--output-format", "json"
+    ], cwd=ws_dir, env=env)
+
+    _run(["pnpm", "install", "--frozen-lockfile"], cwd=ws_dir, env=env)
+    _run(["pnpm", "run", "build"], cwd=ws_dir, env=env)
+
+    # Vite dist 输出
+    built = ws_dir / "dist"
+    if dist_dir.exists():
+        shutil.rmtree(dist_dir)
+    shutil.copytree(built, dist_dir)
+
+    # 标记完成
+    meta_path = out_root / "meta.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "ready"
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+```
+
+---
+
+## 7) Widget 模板（给 Claude “无限发挥”的地基）
+
+你只需要保证两点：
+
+1. 模板能一键 build
+
+2. 模板内置 `market.ts`，让它订阅频道就能拿到实时数据
+
+### services/builder/template/widget-template/package.json
+
+```json
+{
+  "name": "deribit-widget",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}
+```
+
+### services/builder/template/widget-template/vite.config.ts
+
+```ts
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+  base: "./"
+});
+```
+
+### services/builder/template/widget-template/src/lib/market.ts
+
+```ts
+type Handler = (msg: any) => void;
+
+export class MarketClient {
+  private ws: WebSocket | null = null;
+  private handlers: Map<string, Set<Handler>> = new Map();
+
+  connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${location.host}/ws/market`;
+    this.ws = new WebSocket(url);
+
+    this.ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        // Deribit subscription payload shape passthrough:
+        // { jsonrpc:"2.0", method:"subscription", params:{ channel, data } }
+        const ch = msg?.params?.channel;
+        if (!ch) return;
+        const hs = this.handlers.get(ch);
+        if (hs) hs.forEach((h) => h(msg));
+      } catch {}
+    };
+  }
+
+  subscribe(channels: string[], handler: Handler) {
+    this.connect();
+    channels.forEach((c) => {
+      if (!this.handlers.has(c)) this.handlers.set(c, new Set());
+      this.handlers.get(c)!.add(handler);
+    });
+    this.ws?.send(JSON.stringify({ op: "subscribe", channels }));
+  }
+
+  unsubscribe(channels: string[], handler: Handler) {
+    channels.forEach((c) => {
+      this.handlers.get(c)?.delete(handler);
+    });
+    this.ws?.send(JSON.stringify({ op: "unsubscribe", channels }));
+  }
+}
+
+export const market = new MarketClient();
+```
+
+### services/builder/template/widget-template/src/App.tsx（初始很简单，Claude 会按需改）
+
+```tsx
+import React, { useEffect, useMemo, useState } from "react";
+import { market } from "./lib/market";
+
+function getInstrument() {
+  const p = new URLSearchParams(location.search);
+  return p.get("instrument") || "BTC-PERPETUAL";
+}
+
+export default function App() {
+  const instrument = useMemo(() => getInstrument(), []);
+  const [last, setLast] = useState<number | null>(null);
+
+  useEffect(() => {
+    const ch = `ticker.${instrument}.100ms`;
+    const handler = (msg: any) => {
+      const data = msg?.params?.data;
+      if (data?.last_price) setLast(data.last_price);
+    };
+    market.subscribe([ch], handler);
+    return () => market.unsubscribe([ch], handler);
+  }, [instrument]);
+
+  return (
+    <div style={{ fontFamily: "system-ui", padding: 12 }}>
+      <div style={{ fontSize: 12, opacity: 0.7 }}>Instrument</div>
+      <div style={{ fontSize: 18, fontWeight: 600 }}>{instrument}</div>
+      <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>Last Price</div>
+      <div style={{ fontSize: 28, fontWeight: 700 }}>{last ?? "--"}</div>
+    </div>
+  );
+}
+```
+
+---
+
+## 8) MCP 服务（给 Claude “查 instrument / 拼频道 / 频道速查”）
+
+这里用 **FastMCP** 做一个 HTTP MCP server（`mcp.run(transport="http", ... path="/mcp")` 这类写法在 FastMCP 文档与仓库里有示例）。([GitHub](https://github.com/jlowin/fastmcp?utm_source=chatgpt.com "jlowin/fastmcp: 🚀 The fast, Pythonic way to build MCP ..."))  
+Claude Code 侧用 `claude mcp add --transport http ...` 连接。([Claude Code](https://code.claude.com/docs/en/mcp "Connect Claude Code to tools via MCP - Claude Code Docs"))
+
+### services/mcp/requirements.txt
+
+```txt
+fastmcp==2.2.0
+ccxt==4.4.0
+```
+
+### services/mcp/Dockerfile
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY mcp_server.py .
+
+CMD ["python", "mcp_server.py"]
+```
+
+### services/mcp/mcp_server.py
+
+```python
+import os
+from fastmcp import FastMCP
+import ccxt
+
+DERIBIT_ENV = os.getenv("DERIBIT_ENV", "prod")
+
+mcp = FastMCP("deribit-tools")
+
+def _exchange():
+    # ccxt 的 deribit：用于列市场/合约名（demo 足够）
+    ex = ccxt.deribit({"enableRateLimit": True})
+    return ex
+
+@mcp.tool
+def list_instruments(query: str = "", kind: str = "future", limit: int = 20):
+    """
+    List Deribit instruments (best-effort via ccxt). Returns a list of instrument symbols/names.
+    """
+    ex = _exchange()
+    markets = ex.load_markets()
+    names = []
+    for k, v in markets.items():
+        # v["type"] might exist; keep it best-effort
+        s = v.get("symbol") or k
+        if query.lower() in s.lower():
+            names.append(s)
+    return names[:limit]
+
+@mcp.tool
+def channel_cheatsheet():
+    """
+    Quick reference for common public subscription channels.
+    """
+    return {
+        "ticker": "ticker.<instrument>.<interval>  interval: 100ms|agg2|raw",
+        "book": "book.<instrument>.100ms OR book.<instrument>.<group>.<depth>.<interval>",
+        "trades": "trades.<instrument>.<interval>  interval: agg2|100ms|raw (raw may require authorization)",
+        "chart": "chart.trades.<instrument>.<resolution>  resolution: 1,3,5,10,...",
+        "notes": [
+            "Prefer interval=100ms for demo vividness.",
+            "Use grouped book for depth ladders."
+        ]
+    }
+
+if __name__ == "__main__":
+    # Streamable HTTP MCP endpoint at http://0.0.0.0:7001/mcp
+    mcp.run(transport="http", host="0.0.0.0", port=7001, path="/mcp")
+```
+
+---
+
+## 9) Demo 页（最简单：输入 prompt → 生成 → iframe 展示）
+
+### services/api/static/index.html
+
+```html
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Deribit AI Widget Demo</title>
+    <style>
+      body { font-family: system-ui; margin: 16px; }
+      .row { display: flex; gap: 12px; }
+      textarea { width: 520px; height: 120px; }
+      iframe { width: 520px; height: 360px; border: 1px solid #ddd; }
+    </style>
+  </head>
+  <body>
+    <h2>Deribit AI Widget Demo</h2>
+
+    <div class="row">
+      <div>
+        <div>Prompt</div>
+        <textarea id="prompt">做一个 BTC-PERPETUAL 的实时行情卡片：显示 last/mark/index price、24h 变动、并画一个最近 60 个点的迷你折线图。</textarea>
+        <div style="margin-top:8px;">
+          <label>Instrument: </label>
+          <input id="instrument" value="BTC-PERPETUAL" />
+          <button id="go">Generate</button>
+        </div>
+        <div id="out" style="margin-top:10px; font-size:12px; opacity:0.8;"></div>
+      </div>
+
+      <div>
+        <div>Widget Preview (iframe)</div>
+        <iframe id="frame" sandbox="allow-scripts allow-same-origin"></iframe>
+      </div>
+    </div>
+
+    <script>
+      const out = document.getElementById("out");
+      const frame = document.getElementById("frame");
+
+      document.getElementById("go").onclick = async () => {
+        out.textContent = "building...";
+        const prompt = document.getElementById("prompt").value;
+        const instrument = document.getElementById("instrument").value;
+
+        const r = await fetch("/api/widgets", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({prompt, instrument})
+        });
+        const j = await r.json();
+        out.textContent = `widget id=${j.id}, url=${j.widget_url}`;
+
+        frame.src = j.widget_url;
+      };
+    </script>
+  </body>
+</html>
+```
+
+---
+
+## 10) 启动方式（你给销售演示的最短路径）
+
+```bash
+cd deribit-ai-demo
+cp .env.example .env
+# 填好 ANTHROPIC_API_KEY
+docker-compose up --build
+```
+
+打开：
+
+- `http://localhost:8080/`
+
+然后在 prompt 里随便换成：
+
+- “做一个 orderbook 深度梯形图：展示 top 10 bids/asks，价格按档位对齐”
+
+- “做一个实时 trades 列表：最近 30 条，按方向高亮，并带统计（最近 1 分钟成交笔数）”
+
+- “做一个 funding/mark/last 的三行 KPI 面板 + 状态灯（数据延迟>2s 变黄）”
+
+这类需求都会迫使它：
+
+1. 选择频道（ticker/book/trades/chart）
+
+2. 写状态管理和数据结构
+
+3. 写 UI（表格、图表、布局）
+
+4. build 并在 iframe 里跑起来（实时刷新）
+
+---
+
+## 11) 风险与加固（不影响 demo，但建议你至少做两条）
+
+1. **限制可订阅频道白名单**：我在 `api` 里已经做了前缀白名单与字符校验，避免被“伪造 method/路径”利用。
+
+2. **默认别用 trades raw**：Deribit 文档提示 raw interval 可能仅对授权用户开放，demo 用 `100ms` 更稳。([docs.deribit.com](https://docs.deribit.com/ "Deribit API"))
+
+3. **builder 隔离**：真正要长期跑，建议把 builder 做成一次性 job 容器或加队列；demo 阶段先不复杂化。
+
+---
+
+## 12) “ccxt”的位置怎么放
+
+- **元数据/市场列表**：ccxt 很适合给 Claude 当工具用（MCP 里 list/search instrument）。
+
+---
+
+如果你愿意把 demo 再“产品化”一点（更打动销售），下一步我建议你加 3 个非常小但很有效的增强（不改变整体架构）：
+
+1. `api` 增加 `/api/widgets/<id>/logs`（builder 把 claude 输出 + pnpm build 日志写文件），demo 页可实时显示“AI 正在做什么”
+
+2. widget 模板增加 2~3 个极通用 UI 原语（Card/Table/Sparkline），让 Claude 输出更稳定、更像你们未来组件体系
+
+3. `mcp` 增加一个 `recommend_channels(requirement_text)` 工具：把“用户想要的 UI”映射到频道集合，减少它选错频道导致的失败

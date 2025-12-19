@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  api:
+    build: ./services/api
+    environment:
+      - DERIBIT_WS_URL=${DERIBIT_WS_URL}
+      - BUILDER_URL=http://builder:8090
+      - WIDGETS_DIR=/data/widgets
+    ports:
+      - "3010:8080"
+    volumes:
+      - ./data/widgets:/data/widgets
+      - ./services/api/static:/app/static
+      - ./services/api/app:/app/app
+    depends_on:
+      - builder
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
+  builder:
+    build: ./services/builder
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MCP_URL=http://mcp:7001/mcp
+      - WIDGETS_DIR=/data/widgets
+    volumes:
+      - ./data/widgets:/data/widgets
+      - ./services/builder/builder:/app/builder
+    depends_on:
+      - mcp
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
+  mcp:
+    build: ./services/mcp
+    environment:
+      - DERIBIT_ENV=${DERIBIT_ENV:-prod}
+    ports:
+      - "3011:7001"
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
