@@ -25,6 +25,42 @@
         max-width: 1200px;
         margin: 0 auto;
       }
+      /* Full-width preview at top */
+      .preview-container.full-width {
+        margin-bottom: 24px;
+      }
+      .preview-container.full-width iframe {
+        height: 500px;
+      }
+      .preview-size {
+        color: #666;
+        font-size: 11px;
+        margin-left: 8px;
+      }
+      /* Bottom row - three columns */
+      .bottom-row {
+        margin-top: 0;
+      }
+      .bottom-row .col {
+        min-width: 280px;
+      }
+      .bottom-row .chat-panel {
+        margin-top: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+      .bottom-row .chat-messages {
+        flex: 1;
+        max-height: 350px;
+      }
+      .bottom-row .history-container {
+        margin-top: 0;
+        height: 100%;
+      }
+      .bottom-row .history-list {
+        max-height: 400px;
+      }
       .row {
         display: flex;
         gap: 24px;
@@ -114,65 +150,11 @@
       #status.error {
         color: #ef4444;
       }
-      .logs-container {
-        margin-top: 16px;
-        background: #111;
-        border: 1px solid #333;
-        border-radius: 8px;
-        overflow: hidden;
-      }
-      .logs-header {
-        padding: 8px 12px;
-        background: #1a1a1a;
-        border-bottom: 1px solid #333;
-        font-size: 12px;
-        color: #888;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .logs-header .pulse {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #f59e0b;
-        animation: pulse 1s infinite;
-      }
-      .logs-header .pulse.done {
-        background: #10b981;
-        animation: none;
-      }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
-      }
-      #logs {
-        padding: 12px;
-        font-family: "SF Mono", Monaco, Consolas, monospace;
-        font-size: 11px;
-        line-height: 1.5;
-        color: #a3a3a3;
-        max-height: 200px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      #logs:empty::before {
-        content: "Waiting for build to start...";
-        color: #666;
-      }
       .preview-container {
         background: #1a1a1a;
         border: 1px solid #333;
         border-radius: 8px;
         overflow: hidden;
-      }
-      .preview-header {
-        padding: 12px 16px;
-        background: #262626;
-        border-bottom: 1px solid #333;
-        font-size: 13px;
-        color: #888;
       }
       iframe {
         width: 100%;
@@ -232,12 +214,6 @@
       .history-list {
         max-height: 300px;
         overflow-y: auto;
-      }
-      .history-item {
-        padding: 12px 16px;
-        border-bottom: 1px solid #262626;
-        cursor: pointer;
-        transition: background 0.2s;
       }
       .history-item:hover {
         background: #262626;
@@ -307,16 +283,182 @@
         padding: 10px 16px;
         font-size: 13px;
       }
+      /* Chat Panel - Standard Chat UI */
+      .chat-panel {
+        margin-top: 16px;
+        background: #1a1a1a;
+        border: 1px solid #333;
+        border-radius: 8px;
+        overflow: hidden;
+        display: none;
+      }
+      .chat-panel.active {
+        display: block;
+      }
+      .chat-panel-header {
+        padding: 12px 16px;
+        background: #262626;
+        border-bottom: 1px solid #333;
+        font-size: 13px;
+        color: #888;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .chat-panel-header .widget-id {
+        color: #0066ff;
+        font-family: monospace;
+      }
+      .chat-messages {
+        max-height: 250px;
+        overflow-y: auto;
+        padding: 12px;
+      }
+      .chat-message {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .chat-message:last-child {
+        margin-bottom: 0;
+      }
+      .chat-message.system {
+        background: #1e3a5f;
+        border-left: 3px solid #0066ff;
+      }
+      .chat-message.system .label {
+        color: #60a5fa;
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+      }
+      .chat-message.user {
+        background: #262626;
+        border-left: 3px solid #10b981;
+      }
+      .chat-message.user .label {
+        color: #34d399;
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+      }
+      .chat-message.assistant {
+        background: #1a1a1a;
+        border-left: 3px solid #f59e0b;
+      }
+      .chat-message.assistant .label {
+        color: #fbbf24;
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+      }
+      .chat-message.assistant.streaming .label::after {
+        content: " ●";
+        color: #f59e0b;
+        animation: pulse 1s infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .chat-message .log-content {
+        font-family: "SF Mono", Monaco, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 300px;
+        overflow-y: auto;
+        background: #0a0a0a;
+        padding: 8px;
+        border-radius: 4px;
+        margin-top: 8px;
+      }
+      .chat-input-wrapper {
+        padding: 12px;
+        border-top: 1px solid #333;
+        background: #1a1a1a;
+      }
+      .chat-empty {
+        padding: 24px;
+        text-align: center;
+        color: #666;
+        font-size: 13px;
+      }
+      /* Delete Button */
+      .delete-btn {
+        padding: 4px 8px;
+        background: transparent;
+        color: #666;
+        border: 1px solid #333;
+        border-radius: 4px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .delete-btn:hover {
+        background: #ef4444;
+        border-color: #ef4444;
+        color: #fff;
+      }
+      .history-item {
+        padding: 12px 16px;
+        border-bottom: 1px solid #262626;
+        cursor: pointer;
+        transition: background 0.2s;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .history-item-content {
+        flex: 1;
+        min-width: 0;
+      }
+      .history-item .delete-btn {
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+      .history-item:hover .delete-btn {
+        opacity: 1;
+      }
+      .preview-header {
+        padding: 12px 16px;
+        background: #262626;
+        border-bottom: 1px solid #333;
+        font-size: 13px;
+        color: #888;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
     </style>
   </head>
   <body>
     <div class="container">
       <h2>Deribit AI Widget Demo</h2>
 
-      <div class="row">
+      <!-- Top: Full-width Preview -->
+      <div class="preview-container full-width">
+        <div class="preview-header">
+          <span>Widget Preview <span class="preview-size">(1152 x 500)</span></span>
+          <button class="delete-btn" id="deleteCurrentWidget" style="display: none;">Delete</button>
+        </div>
+        <iframe id="frame"></iframe>
+      </div>
+
+      <!-- Bottom: Three columns -->
+      <div class="row bottom-row">
+        <!-- Column 1: Input -->
         <div class="col">
           <label>Prompt</label>
-          <textarea id="prompt">做一个实时行情卡片：显示 last/mark/index price、24h 变动百分比，用深色主题。</textarea>
+          <textarea id="prompt">做一个 BTC 期权 Term Structure 图表，显示各到期日的 ATM IV 曲线，支持切换 25D Call/Put。</textarea>
 
           <div class="input-row">
             <button id="go">Generate Widget</button>
@@ -324,29 +466,40 @@
 
           <div id="status">Ready to generate...</div>
 
-          <div class="logs-container" id="logsContainer" style="display: none;">
-            <div class="logs-header">
-              <span>Build Logs</span>
-              <div class="pulse" id="logsPulse"></div>
-            </div>
-            <div id="logs"></div>
-          </div>
-
           <div class="examples">
             <h3>Example Prompts</h3>
-            <span class="example-btn" data-prompt="做一个实时行情卡片：显示 last price、mark price、index price，以及 24h 涨跌幅，用深色主题。">价格卡片</span>
-            <span class="example-btn" data-prompt="做一个 orderbook 深度图：展示 top 10 bids/asks，用柱状图形式，买单绿色卖单红色。">深度图</span>
-            <span class="example-btn" data-prompt="做一个实时成交列表：显示最近 20 条成交记录，包含价格、数量、方向，买入绿色卖出红色。">成交列表</span>
-            <span class="example-btn" data-prompt="做一个迷你 K 线图：展示最近的价格走势折线图，每秒更新一次。">价格走势</span>
+            <span class="example-btn" data-prompt="做一个 BTC 期权 Term Structure 图表，显示各到期日的 ATM IV 曲线，支持切换不同 Delta（ATM、25D Call、25D Put、10D Call、10D Put），X轴是到期日，Y轴是 IV%。">Term Structure</span>
+            <span class="example-btn" data-prompt="做一个 Volatility Smile 图表，选择一个到期日后显示该到期日所有行权价的 IV 分布曲线，X轴是行权价或 Moneyness，Y轴是 IV%，Call 和 Put 用不同颜色。">Vol Smile</span>
+            <span class="example-btn" data-prompt="做一个 BTC 期权链（Options Chain），T型布局：中间是行权价，左边 Calls 右边 Puts，显示 IV、Bid、Ask、Delta，当前价格附近的行高亮，支持选择到期日。">Options Chain</span>
+            <span class="example-btn" data-prompt="做一个期权 Greeks 仪表盘，订阅一个期权合约的实时数据，用仪表盘形式展示 Delta、Gamma、Vega、Theta，并显示 IV 和标的价格。">Greeks Dashboard</span>
+            <span class="example-btn" data-prompt="做一个 BTC 期权大单监控，实时显示期权成交流，筛选金额大于 $10,000 的成交，显示合约名、方向、数量、价格、IV，买入绿色卖出红色。">Options Flow</span>
+            <span class="example-btn" data-prompt="做一个 DVOL 波动率指数图表，显示 BTC 和 ETH 的 Deribit 波动率指数实时值和最近走势，类似 VIX 的展示方式。">DVOL Index</span>
+            <span class="example-btn" data-prompt="做一个 BTC 永续合约资金费率历史图，显示过去 7 天的资金费率变化，正费率绿色负费率红色，并显示当前费率和年化收益率。">Funding Rate</span>
+            <span class="example-btn" data-prompt="做一个订单簿深度图，显示 BTC-PERPETUAL 的买卖盘深度，用面积图展示累计深度，买单绿色卖单红色，中间显示 spread。">Order Book</span>
           </div>
         </div>
 
+        <!-- Column 2: Chat Panel -->
         <div class="col">
-          <div class="preview-container">
-            <div class="preview-header">Widget Preview</div>
-            <iframe id="frame"></iframe>
+          <div class="chat-panel active" id="chatPanel">
+            <div class="chat-panel-header">
+              <span>Conversation</span>
+              <span class="widget-id" id="chatWidgetId"></span>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+              <div class="chat-empty">Select a widget to view conversation</div>
+            </div>
+            <div class="chat-input-wrapper">
+              <div class="chat-input-row">
+                <input type="text" id="chatInput" placeholder="Tell Claude what to change..." />
+                <button id="chatSend">Send</button>
+              </div>
+            </div>
           </div>
+        </div>
 
+        <!-- Column 3: History -->
+        <div class="col">
           <div class="history-container">
             <div class="history-header">
               <span>History</span>
@@ -354,14 +507,6 @@
             </div>
             <div class="history-list" id="historyList">
               <div class="history-empty">Loading...</div>
-            </div>
-          </div>
-
-          <div class="chat-container" id="chatContainer" style="display: none;">
-            <h4>Modify Widget: <span id="chatWidgetId"></span></h4>
-            <div class="chat-input-row">
-              <input type="text" id="chatInput" placeholder="Tell Claude what to change..." />
-              <button id="chatSend">Send</button>
             </div>
           </div>
         </div>
@@ -373,16 +518,16 @@
       const frameEl = document.getElementById("frame");
       const goBtn = document.getElementById("go");
       const promptEl = document.getElementById("prompt");
-      const logsContainer = document.getElementById("logsContainer");
-      const chatContainer = document.getElementById("chatContainer");
+      const chatPanel = document.getElementById("chatPanel");
       const chatWidgetIdEl = document.getElementById("chatWidgetId");
+      const chatMessages = document.getElementById("chatMessages");
       const chatInput = document.getElementById("chatInput");
       const chatSendBtn = document.getElementById("chatSend");
+      const deleteCurrentWidgetBtn = document.getElementById("deleteCurrentWidget");
 
       let currentWidgetId = null;
-      let currentInstrument = "";
-      const logsEl = document.getElementById("logs");
-      const logsPulse = document.getElementById("logsPulse");
+      let currentPrompt = "";
+      let streamingMsgEl = null; // Reference to the streaming assistant message
 
       // Detect base path from current location (e.g., "/spcoding")
       const BASE_PATH = window.location.pathname.replace(/\/+$/, '') || '';
@@ -394,15 +539,37 @@
         });
       });
 
-      // Poll logs incrementally
-      async function pollLogs(widgetId, offset = 0) {
+      // Create a streaming assistant message in the chat panel
+      function createStreamingMessage() {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'chat-message assistant streaming';
+        msgDiv.innerHTML = `
+          <div class="label">Claude</div>
+          <div class="content log-content"></div>
+        `;
+        chatMessages.appendChild(msgDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        streamingMsgEl = msgDiv;
+        return msgDiv.querySelector('.log-content');
+      }
+
+      // Finish streaming (remove pulse animation)
+      function finishStreaming() {
+        if (streamingMsgEl) {
+          streamingMsgEl.classList.remove('streaming');
+          streamingMsgEl = null;
+        }
+      }
+
+      // Poll logs incrementally and update the streaming message
+      async function pollLogs(widgetId, offset = 0, logContentEl) {
         try {
           const r = await fetch(`${BASE_PATH}/api/widgets/${widgetId}/logs?offset=${offset}`);
           const data = await r.json();
-          if (data.logs) {
-            logsEl.textContent += data.logs;
-            // Auto-scroll to bottom
-            logsEl.scrollTop = logsEl.scrollHeight;
+          if (data.logs && logContentEl) {
+            logContentEl.textContent += data.logs;
+            // Auto-scroll chat messages
+            chatMessages.scrollTop = chatMessages.scrollHeight;
           }
           return { offset: data.offset, done: data.done };
         } catch (e) {
@@ -410,20 +577,15 @@
         }
       }
 
-      // Poll widget status until ready, with logs streaming (no timeout - Claude Code can take a while)
-      async function waitForWidget(widgetId) {
+      // Poll widget status until ready, with logs streaming to conversation panel
+      async function waitForWidget(widgetId, logContentEl) {
         const startTime = Date.now();
         let logOffset = 0;
-
-        // Show logs container
-        logsContainer.style.display = "block";
-        logsEl.textContent = "";
-        logsPulse.classList.remove("done");
 
         while (true) {
           try {
             // Poll logs
-            const logResult = await pollLogs(widgetId, logOffset);
+            const logResult = await pollLogs(widgetId, logOffset, logContentEl);
             logOffset = logResult.offset;
 
             // Poll status
@@ -431,14 +593,14 @@
             const status = await r.json();
 
             if (status.status === "ready") {
-              logsPulse.classList.add("done");
+              finishStreaming();
               // Final log fetch
-              await pollLogs(widgetId, logOffset);
+              await pollLogs(widgetId, logOffset, logContentEl);
               return { success: true };
             }
             if (status.status === "failed" || status.status === "error") {
-              logsPulse.classList.add("done");
-              await pollLogs(widgetId, logOffset);
+              finishStreaming();
+              await pollLogs(widgetId, logOffset, logContentEl);
               return { success: false, error: status.error || "Build failed" };
             }
 
@@ -471,42 +633,139 @@
             const statusClass = w.status === 'ready' ? '' : (w.status === 'failed' ? 'failed' : 'building');
             const time = w.created_at ? new Date(w.created_at * 1000).toLocaleString() : '';
             return `
-              <div class="history-item" data-id="${w.id}" data-instrument="${w.instrument || ''}" data-status="${w.status}">
-                <div class="prompt">${escapeHtml(w.prompt || 'No prompt')}</div>
-                <div class="meta">
-                  <span class="status ${statusClass}">${w.status}</span>
-                  <span>${w.instrument || '-'}</span>
-                  <span>${time}</span>
+              <div class="history-item" data-id="${w.id}" data-status="${w.status}" data-prompt="${escapeHtml(w.prompt || '')}">
+                <div class="history-item-content">
+                  <div class="prompt">${escapeHtml(w.prompt || 'No prompt')}</div>
+                  <div class="meta">
+                    <span class="status ${statusClass}">${w.status}</span>
+                    <span>${time}</span>
+                  </div>
                 </div>
+                <button class="delete-btn" data-id="${w.id}" onclick="event.stopPropagation(); deleteWidget('${w.id}')">Delete</button>
               </div>
             `;
           }).join('');
 
-          // Add click handlers
+          // Add click handlers for selecting widgets
           historyList.querySelectorAll('.history-item').forEach(item => {
-            item.addEventListener('click', () => {
-              const id = item.dataset.id;
-              const instrument = item.dataset.instrument;
-              const status = item.dataset.status;
-              if (status === 'ready') {
-                frameEl.src = `${BASE_PATH}/widgets/${id}/dist/?instrument=${instrument}`;
-                statusEl.textContent = `Loaded widget: ${id}`;
-                statusEl.className = 'ready';
-                // Enable chat for this widget
-                currentWidgetId = id;
-                currentInstrument = instrument;
-                chatWidgetIdEl.textContent = id;
-                chatContainer.style.display = 'block';
-                chatInput.value = '';
-              } else {
-                statusEl.textContent = `Widget ${id} is not ready (status: ${status})`;
-                statusEl.className = 'error';
-                chatContainer.style.display = 'none';
-              }
-            });
+            item.addEventListener('click', () => selectWidget(item.dataset.id, item.dataset.status, item.dataset.prompt));
           });
         } catch (e) {
           historyList.innerHTML = '<div class="history-empty">Failed to load history</div>';
+        }
+      }
+
+      // Select a widget and load its conversation
+      async function selectWidget(id, status, prompt) {
+        if (status === 'ready') {
+          frameEl.src = `${BASE_PATH}/widgets/${id}/dist/`;
+          statusEl.textContent = `Loaded widget: ${id}`;
+          statusEl.className = 'ready';
+
+          // Set current widget
+          currentWidgetId = id;
+          currentPrompt = prompt;
+          chatWidgetIdEl.textContent = id;
+
+          // Show chat panel and delete button
+          chatPanel.classList.add('active');
+          deleteCurrentWidgetBtn.style.display = 'block';
+          chatInput.value = '';
+
+          // Load chat history from server
+          await loadChatHistory(id, prompt);
+        } else {
+          statusEl.textContent = `Widget ${id} is not ready (status: ${status})`;
+          statusEl.className = 'error';
+          chatPanel.classList.remove('active');
+          deleteCurrentWidgetBtn.style.display = 'none';
+        }
+      }
+
+      // Load and render chat history with build log
+      async function loadChatHistory(widgetId, prompt) {
+        try {
+          const [statusRes, logsRes] = await Promise.all([
+            fetch(`${BASE_PATH}/api/widgets/${widgetId}/status`),
+            fetch(`${BASE_PATH}/api/widgets/${widgetId}/logs`)
+          ]);
+          const meta = await statusRes.json();
+          const logsData = await logsRes.json();
+          renderChatHistory(prompt, meta.chat_history || [], logsData.logs || '');
+        } catch (e) {
+          renderChatHistory(prompt, [], '');
+        }
+      }
+
+      // Render chat messages with build log
+      function renderChatHistory(prompt, chatHistory, buildLog) {
+        let html = '';
+
+        // Original prompt as system message
+        html += `
+          <div class="chat-message system">
+            <div class="label">Original Prompt</div>
+            <div class="content">${escapeHtml(prompt)}</div>
+          </div>
+        `;
+
+        // Chat history - user messages
+        for (const msg of chatHistory) {
+          if (msg.role === 'user') {
+            html += `
+              <div class="chat-message user">
+                <div class="label">You</div>
+                <div class="content">${escapeHtml(msg.content)}</div>
+              </div>
+            `;
+          }
+        }
+
+        // Build log as assistant response
+        if (buildLog && buildLog.trim()) {
+          html += `
+            <div class="chat-message assistant">
+              <div class="label">Claude (Build Log)</div>
+              <div class="content log-content">${escapeHtml(buildLog)}</div>
+            </div>
+          `;
+        }
+
+        chatMessages.innerHTML = html || '<div class="chat-empty">No conversation yet</div>';
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+
+      // Delete a widget
+      async function deleteWidget(widgetId) {
+        if (!confirm(`Delete widget ${widgetId}?`)) return;
+
+        try {
+          const r = await fetch(`${BASE_PATH}/api/widgets/${widgetId}`, {
+            method: 'DELETE'
+          });
+          const data = await r.json();
+
+          if (data.error) {
+            statusEl.textContent = `Error: ${data.error}`;
+            statusEl.className = 'error';
+            return;
+          }
+
+          // Clear if it was the current widget
+          if (currentWidgetId === widgetId) {
+            currentWidgetId = null;
+            currentPrompt = '';
+            frameEl.src = '';
+            chatPanel.classList.remove('active');
+            deleteCurrentWidgetBtn.style.display = 'none';
+          }
+
+          statusEl.textContent = `Widget ${widgetId} deleted`;
+          statusEl.className = '';
+          loadHistory();
+        } catch (e) {
+          statusEl.textContent = `Error: ${e.message}`;
+          statusEl.className = 'error';
         }
       }
 
@@ -529,6 +788,17 @@
         statusEl.textContent = `Sending modification request...`;
         statusEl.className = 'building';
 
+        // Immediately add user message to chat panel
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'chat-message user';
+        msgDiv.innerHTML = `
+          <div class="label">You</div>
+          <div class="content">${escapeHtml(message)}</div>
+        `;
+        chatMessages.appendChild(msgDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        chatInput.value = '';
+
         try {
           const r = await fetch(`${BASE_PATH}/api/widgets/${currentWidgetId}/chat`, {
             method: "POST",
@@ -543,15 +813,18 @@
             return;
           }
 
+          // Create streaming message for Claude's response
+          const logContentEl = createStreamingMessage();
+
           // Wait for modification to complete
           statusEl.textContent = "Modifying widget... (0s)";
-          const result = await waitForWidget(currentWidgetId);
+          const result = await waitForWidget(currentWidgetId, logContentEl);
 
           if (result.success) {
             statusEl.textContent = `Widget modified!`;
             statusEl.className = 'ready';
             // Reload widget
-            frameEl.src = `${BASE_PATH}/widgets/${currentWidgetId}/dist/?instrument=${currentInstrument}&t=${Date.now()}`;
+            frameEl.src = `${BASE_PATH}/widgets/${currentWidgetId}/dist/?t=${Date.now()}`;
             loadHistory();
           } else {
             statusEl.textContent = `Error: ${result.error}`;
@@ -563,13 +836,17 @@
         } finally {
           chatSendBtn.disabled = false;
           chatInput.disabled = false;
-          chatInput.value = '';
         }
       }
 
       chatSendBtn.addEventListener('click', sendChat);
       chatInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendChat();
+      });
+
+      // Delete current widget button
+      deleteCurrentWidgetBtn.addEventListener('click', () => {
+        if (currentWidgetId) deleteWidget(currentWidgetId);
       });
 
       goBtn.addEventListener("click", async () => {
@@ -601,9 +878,27 @@
             return;
           }
 
+          // Set up conversation panel for new widget
+          currentWidgetId = j.id;
+          currentPrompt = prompt;
+          chatWidgetIdEl.textContent = j.id;
+          chatPanel.classList.add('active');
+          deleteCurrentWidgetBtn.style.display = 'block';
+
+          // Clear chat and show initial prompt
+          chatMessages.innerHTML = `
+            <div class="chat-message system">
+              <div class="label">Original Prompt</div>
+              <div class="content">${escapeHtml(prompt)}</div>
+            </div>
+          `;
+
+          // Create streaming message for Claude's response
+          const logContentEl = createStreamingMessage();
+
           // Wait for widget to be built
           statusEl.textContent = "Building widget... (0s, status: queued)";
-          const result = await waitForWidget(j.id);
+          const result = await waitForWidget(j.id, logContentEl);
 
           if (result.success) {
             statusEl.textContent = `Widget ready! ID: ${j.id}`;
