@@ -85,6 +85,13 @@ def _run_claude(prompt: str, ws_dir: Path, log_func, session_id: str = None, res
         preexec_fn=os.setsid if hasattr(os, 'setsid') else None
     )
 
+    # Save the process group ID immediately after starting
+    # (we need this before the process exits to clean up orphaned children)
+    try:
+        pgid = os.getpgid(proc.pid) if hasattr(os, 'getpgid') else None
+    except (ProcessLookupError, OSError):
+        pgid = None
+
     # 实时解析 JSON 事件流
     result_session_id = session_id
     try:
@@ -162,6 +169,16 @@ def _run_claude(prompt: str, ws_dir: Path, log_func, session_id: str = None, res
         try:
             proc.wait(timeout=300)
             log_func(f"    Claude exit code: {proc.returncode}")
+
+            # After Claude exits, kill the entire process group to clean up orphaned children
+            # (esbuild, chrome-headless, etc. that Claude may have spawned)
+            # Use the pgid we saved at startup since the process is now dead
+            if pgid is not None and pgid != os.getpgid(0):  # Don't kill our own process group
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                    log_func(f"    Sent SIGTERM to process group {pgid} for cleanup")
+                except (ProcessLookupError, PermissionError):
+                    pass  # Process group already gone
         except subprocess.TimeoutExpired:
             log_func("    Claude process timed out after 300s, terminating...")
             _terminate_process(proc, log_func)
@@ -258,6 +275,10 @@ Deribit 是全球领先的加密货币期权交易所，用户主要关注期权
 - **禁止 Mock 数据**：必须连接真实的 WebSocket 获取实时数据
 - **禁止直接调用 Deribit API**：必须通过 src/lib/market.ts 连接 /ws/market
 - **必须验证数据**：截图时必须确认显示的是真实的、变化的市场数据
+- **禁止修改 market.ts 中的 WebSocket 连接代码**：
+  - 网关使用简化协议 `{{ op: "subscribe", channels: [...] }}`
+  - **绝对不要**改成 Deribit JSON-RPC 格式 `{{ jsonrpc: "2.0", method: "public/subscribe", ... }}`
+  - 只需导入并调用 `market.subscribe(channels, handler)` 即可
 
 ### 数据获取方式对比
 
@@ -659,6 +680,227 @@ interface OptionChainRow {{
 
 // 按 strike 排序，当前价格高亮
 ```
+
+---
+
+## 第 2.5 部分：Analytics API（服务端分析接口）
+
+### ⭐ 为什么使用 Analytics API？
+
+Analytics API 提供**服务端预计算**的期权分析数据，相比自己计算有以下优势：
+
+| 特性 | 自己计算 | Analytics API |
+|-----|---------|---------------|
+| OI 热力图 | 需要聚合所有期权数据 | ✅ 直接返回聚合结果 |
+| OI 变化 | 需要自己维护历史数据 | ✅ 服务端维护 ring buffer |
+| Max Pain | 需要遍历所有 strike 计算 | ✅ 服务端实时计算 |
+| 隐含波动区间 | 需要找 ATM 期权并计算 | ✅ 直接返回 ±1σ/±2σ |
+| 数据一致性 | 多个 Widget 口径可能不同 | ✅ 统一数据源 |
+
+### Analytics API 列表
+
+```typescript
+import {{
+  getAnalyticsStatus,    // Collector 服务状态
+  getAnalyticsFrame,     // 完整期权链快照
+  getOIHeatmap,          // OI 热力图
+  getOIChange,           // OI 变化（1m/5m 窗口）
+  getImpliedMove,        // 隐含波动区间
+  getMaxPain,            // 最大痛点
+  getAnalyticsExpiries,  // 可用到期日
+}} from "./lib/market";
+```
+
+### ⭐ OI 热力图（Open Interest Heatmap）
+
+显示持仓量在不同到期日和行权价上的分布。
+
+```typescript
+const heatmap = await getOIHeatmap("BTC");
+// 返回：
+// {{
+//   currency: "BTC",
+//   index_price: 97234.5,
+//   total_call_oi: 322880.3,
+//   total_put_oi: 167402.0,
+//   put_call_ratio: 0.52,
+//   cells: [
+//     {{ expiry_label: "26DEC25", strike: 100000, call_oi: 1500, put_oi: 800, total_oi: 2300 }},
+//     ...
+//   ]
+// }}
+```
+
+**适用场景**：
+- 仓位集中区域分析
+- 关键行权价识别
+- Put/Call Ratio 展示
+
+### ⭐ OI 变化（OI Change）
+
+监控一段时间内 OI 的增减变化，识别新建仓/平仓动向。
+
+```typescript
+// 1 分钟 OI 变化
+const change1m = await getOIChange("BTC", 60);
+// 5 分钟 OI 变化
+const change5m = await getOIChange("BTC", 300);
+
+// 返回：
+// {{
+//   window_seconds: 60,
+//   top_increases: [{{ instrument_name, oi_change, oi_change_pct, ... }}],
+//   top_decreases: [{{ instrument_name, oi_change, oi_change_pct, ... }}],
+//   changes: [...]  // 所有期权的变化
+// }}
+```
+
+**适用场景**：
+- 大单/大仓位变动监控
+- 市场情绪变化探测
+- 异常活动提醒
+
+### ⭐ 隐含波动区间（Implied Move Bands）
+
+基于 ATM IV 计算价格可能波动范围。
+
+```typescript
+const impliedMove = await getImpliedMove("BTC");
+// 返回：
+// {{
+//   index_price: 97234.5,
+//   bands: [
+//     {{
+//       expiry_label: "26DEC25",
+//       days_to_expiry: 3.2,
+//       atm_iv: 47.31,                // ATM 隐含波动率 (%)
+//       spot_price: 97234.5,
+//       upper_1sigma: 101234.5,       // +1σ 价格
+//       lower_1sigma: 93234.5,        // -1σ 价格
+//       upper_2sigma: 105234.5,       // +2σ 价格
+//       lower_2sigma: 89234.5,        // -2σ 价格
+//       move_1sigma_pct: 4.12,        // ±1σ 波动百分比
+//       move_2sigma_pct: 8.24,        // ±2σ 波动百分比
+//     }},
+//     ...
+//   ]
+// }}
+```
+
+**适用场景**：
+- 价格区间预测展示
+- 波动率分析
+- 风险评估
+
+### ⭐ Max Pain（最大痛点）
+
+期权到期时，让多空双方损失最大化的价格点。
+
+```typescript
+// 最近到期日的 max pain
+const maxPain = await getMaxPain("BTC");
+// 指定到期日
+const maxPainDec = await getMaxPain("BTC", "26DEC25");
+
+// 返回：
+// {{
+//   expiry_label: "26DEC25",
+//   index_price: 97234.5,
+//   max_pain_strike: 95000,          // Max Pain 行权价
+//   pain_curve: [
+//     {{ strike: 90000, total_pain: 12345678, call_pain: 5000000, put_pain: 7345678 }},
+//     {{ strike: 95000, total_pain: 8765432, ... }},  // 最小值 = Max Pain
+//     {{ strike: 100000, total_pain: 15432100, ... }},
+//     ...
+//   ]
+// }}
+```
+
+**适用场景**：
+- Max Pain 价格标注
+- Pain Curve 曲线图
+- 到期日价格预测参考
+
+### Analytics API 使用示例
+
+#### 示例 1：OI Heatmap Widget
+
+```tsx
+import React, {{ useEffect, useState }} from "react";
+import {{ getOIHeatmap, OIHeatmapResult }} from "./lib/market";
+
+export default function OIHeatmap() {{
+  const [data, setData] = useState<OIHeatmapResult | null>(null);
+  const [currency, setCurrency] = useState<"BTC" | "ETH">("BTC");
+
+  useEffect(() => {{
+    async function load() {{
+      const result = await getOIHeatmap(currency);
+      setData(result);
+    }}
+    load();
+    const interval = setInterval(load, 5000); // 每 5 秒刷新
+    return () => clearInterval(interval);
+  }}, [currency]);
+
+  if (!data) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <h2>OI Heatmap - {{currency}}</h2>
+      <div>Put/Call Ratio: {{data.put_call_ratio.toFixed(2)}}</div>
+      <div>Total Call OI: {{data.total_call_oi.toLocaleString()}}</div>
+      <div>Total Put OI: {{data.total_put_oi.toLocaleString()}}</div>
+      {{/* 渲染热力图... */}}
+    </div>
+  );
+}}
+```
+
+#### 示例 2：Max Pain Chart
+
+```tsx
+import React, {{ useEffect, useState }} from "react";
+import {{ getMaxPain, MaxPainResult }} from "./lib/market";
+import {{ BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine }} from "recharts";
+
+export default function MaxPainChart() {{
+  const [data, setData] = useState<MaxPainResult | null>(null);
+
+  useEffect(() => {{
+    getMaxPain("BTC").then(setData);
+  }}, []);
+
+  if (!data) return <div>Loading...</div>;
+
+  return (
+    <div style={{{{ background: "#0a0a0a", padding: 16 }}}}>
+      <h3>Max Pain: ${{data.max_pain_strike.toLocaleString()}}</h3>
+      <ResponsiveContainer width="100%" height={{300}}>
+        <BarChart data={{data.pain_curve}}>
+          <XAxis dataKey="strike" stroke="#666" />
+          <YAxis stroke="#666" />
+          <Tooltip />
+          <Bar dataKey="total_pain" fill="#2196f3" />
+          <ReferenceLine x={{data.max_pain_strike}} stroke="#ffeb3b" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}}
+```
+
+### 何时使用 Analytics API vs WebSocket
+
+| 场景 | 推荐方式 | 原因 |
+|-----|---------|------|
+| OI 热力图 | Analytics API | 需要聚合计算 |
+| OI 变化监控 | Analytics API | 需要历史对比 |
+| Max Pain | Analytics API | 复杂计算 |
+| 隐含波动区间 | Analytics API | 需要找 ATM |
+| 单个期权实时价格 | WebSocket | 需要毫秒级更新 |
+| 期权 Greeks | WebSocket | 只有 ticker 有 |
+| 成交流监控 | WebSocket | 需要实时推送 |
 
 ---
 
